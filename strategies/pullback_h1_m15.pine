@@ -1,0 +1,144 @@
+//@version=6
+strategy("Pullback H1/M15 (EMA+RSI+ATR)", overlay=true, currency=currency.EUR,
+     initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1,
+     pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false)
+
+// ===== Paramètres =====
+riskEUR = input.float(150.0, "Risque par trade (EUR)")
+
+// ===== Tendance H1 (bougie clôturée, sans repaint via décalage [1]) =====
+ema50H1  = request.security(syminfo.tickerid, "60", ta.ema(close, 50)[1],  lookahead=barmerge.lookahead_off)
+ema200H1 = request.security(syminfo.tickerid, "60", ta.ema(close, 200)[1], lookahead=barmerge.lookahead_off)
+closeH1  = request.security(syminfo.tickerid, "60", close[1],             lookahead=barmerge.lookahead_off)
+atrH1    = request.security(syminfo.tickerid, "60", ta.atr(14)[1],        lookahead=barmerge.lookahead_off)
+h1Time   = request.security(syminfo.tickerid, "60", time,                 lookahead=barmerge.lookahead_off)
+
+trendLong  = ema50H1 > ema200H1 and closeH1 > ema50H1 and math.abs(ema50H1 - ema200H1) >= 0.5 * atrH1
+trendShort = ema50H1 < ema200H1 and closeH1 < ema50H1 and math.abs(ema50H1 - ema200H1) >= 0.5 * atrH1
+trendDir   = trendLong ? 1 : trendShort ? -1 : 0
+
+// ===== Indicateurs M15 =====
+ema20   = ta.ema(close, 20)
+ema50M  = ta.ema(close, 50)
+rsi14   = ta.rsi(close, 14)
+atrM15  = ta.atr(14)
+smaAtr  = ta.sma(atrM15, 20)
+
+atrOK     = atrM15 >= smaAtr and atrM15 <= 2.5 * smaAtr
+inSession = not na(time(timeframe.period, "0800-1100,1430-1700:1234567", "Europe/Paris"))
+isCloseTime = hour(time, "Europe/Paris") == 21 and minute(time, "Europe/Paris") >= 45
+
+// ===== Etat (persiste entre les barres) =====
+var bool  pbActive  = false
+var int   pbDir     = 0
+var int   pbBars    = 0
+var float pbExtreme = na
+
+var int   tDir      = 0
+var float tEntry    = na
+var float tSL       = na
+var float tTP1      = na
+var float tQtyInit  = na
+var bool  tp1Done   = false
+var float trailSL   = na
+
+var int   tradesToday   = 0
+var int   lossesToday   = 0
+var float dailyPnL      = 0.0
+var float prevNetProfit = 0.0
+var float slH1Time      = na
+
+if barstate.isconfirmed
+    // --- Nouveau jour : remise à zéro des compteurs ---
+    if dayofmonth(time, "Europe/Paris") != dayofmonth(time[1], "Europe/Paris")
+        tradesToday := 0
+        lossesToday := 0
+        dailyPnL    := 0.0
+
+    // --- Détection de la clôture d'une position (SL, TP ou trailing) ---
+    if strategy.position_size == 0 and strategy.position_size[1] != 0
+        tradePnL       = strategy.netprofit - prevNetProfit
+        prevNetProfit := strategy.netprofit
+        dailyPnL      += tradePnL
+        if tradePnL < 0
+            lossesToday += 1
+            slH1Time    := h1Time  // attendre la prochaine bougie H1 après une perte
+
+    haltToday  = lossesToday >= 2 or dailyPnL <= -300
+    canTradeH1 = na(slH1Time) or h1Time > slH1Time
+
+    // --- Machine à états du pullback M15 ---
+    if pbActive and trendDir != pbDir
+        pbActive := false
+
+    if not pbActive and trendDir != 0 and canTradeH1
+        startLong  = trendDir == 1  and low  <= ema20 and close >= ema50M
+        startShort = trendDir == -1 and high >= ema20 and close <= ema50M
+        if startLong or startShort
+            pbActive  := true
+            pbDir     := trendDir
+            pbBars    := 1
+            pbExtreme := rsi14
+    else if pbActive
+        pbBars += 1
+        if pbDir == 1
+            if low <= ema20
+                pbExtreme := math.min(pbExtreme, rsi14)
+            if close < ema50M or pbExtreme < 35 or pbBars > 8
+                pbActive := false
+        else
+            if high >= ema20
+                pbExtreme := math.max(pbExtreme, rsi14)
+            if close > ema50M or pbExtreme > 65 or pbBars > 8
+                pbActive := false
+
+    pbReady = pbActive and ((pbDir == 1 and pbExtreme >= 35 and pbExtreme <= 48) or
+                             (pbDir == -1 and pbExtreme >= 52 and pbExtreme <= 65))
+
+    entryLong  = pbReady and pbDir == 1  and trendLong  and close > ema20 and rsi14 > 50
+    entryShort = pbReady and pbDir == -1 and trendShort and close < ema20 and rsi14 < 50
+
+    canOpen = strategy.position_size == 0 and not haltToday and tradesToday < 3 and inSession and atrOK
+
+    if (entryLong or entryShort) and canOpen
+        low5   = ta.lowest(low, 5)
+        high5  = ta.highest(high, 5)
+        eurusd = request.security("FX:EURUSD", timeframe.period, close, lookahead=barmerge.lookahead_off)
+        dir    = entryLong ? 1 : -1
+        slDist = dir == 1 ? math.max(1.5 * atrM15, (close - low5) + 0.2 * atrM15)
+                           : math.max(1.5 * atrM15, (high5 - close) + 0.2 * atrM15)
+
+        if slDist > 0 and slDist <= 2.5 * atrM15 and not na(eurusd)
+            qty = (riskEUR * eurusd) / slDist  // conversion du risque EUR -> devise de cotation via EURUSD
+            tDir     := dir
+            tEntry   := close
+            tSL      := dir == 1 ? close - slDist : close + slDist
+            tTP1     := dir == 1 ? tEntry + 1.5 * slDist : tEntry - 1.5 * slDist
+            tp1Done  := false
+            trailSL  := tSL
+            tradesToday += 1
+            strategy.entry(dir == 1 ? "Long" : "Short", dir == 1 ? strategy.long : strategy.short, qty=qty)
+        pbActive := false  // opportunité consommée, qu'elle soit tradée ou filtrée
+
+    // --- Gestion de la position ouverte (TP1 50% + break-even + trailing) ---
+    dirLabel = tDir == 1 ? "Long" : "Short"
+    justEntered = strategy.position_size != 0 and strategy.position_size[1] == 0
+    if justEntered
+        tQtyInit := math.abs(strategy.position_size)
+        strategy.exit("TP1", dirLabel, qty_percent=50, limit=tTP1, stop=tSL)
+        strategy.exit("RUN", dirLabel, qty_percent=50, stop=trailSL)
+    else if strategy.position_size != 0
+        if not tp1Done and math.abs(strategy.position_size) < tQtyInit
+            tp1Done := true
+            trailSL := tEntry  // break-even sur le reste après TP1
+        if tp1Done
+            // ordre RUN recalculé sur 100% de la position restante (déjà réduite par TP1)
+            rr  = math.abs(tEntry - tSL)
+            tp3 = tDir == 1 ? tEntry + 3 * rr : tEntry - 3 * rr
+            trailSL := tDir == 1 ? math.max(trailSL, high - 2 * atrM15) : math.min(trailSL, low + 2 * atrM15)
+            strategy.exit("RUN", dirLabel, qty_percent=100, stop=trailSL, limit=tp3)
+        // avant TP1 : on laisse l'ordre RUN initial (50%, stop=tSL) tel quel
+
+// --- Clôture forcée de toute position à 21h45 (heure de Paris) ---
+if isCloseTime and strategy.position_size != 0
+    strategy.close_all("Clôture 21h45")
