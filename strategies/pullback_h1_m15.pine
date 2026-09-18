@@ -1,7 +1,5 @@
 //@version=6
-strategy("Pullback H1/M15 (EMA+RSI+ATR)", overlay=true, currency=currency.EUR,
-     initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1,
-     pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false)
+strategy("Pullback H1/M15 (EMA+RSI+ATR)", overlay=true, currency=currency.EUR, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false)
 
 // ===== Paramètres =====
 riskEUR = input.float(150.0, "Risque par trade (EUR)")
@@ -92,8 +90,7 @@ if barstate.isconfirmed
             if close > ema50M or pbExtreme > 65 or pbBars > 8
                 pbActive := false
 
-    pbReady = pbActive and ((pbDir == 1 and pbExtreme >= 35 and pbExtreme <= 48) or
-                             (pbDir == -1 and pbExtreme >= 52 and pbExtreme <= 65))
+    pbReady = pbActive and ((pbDir == 1 and pbExtreme >= 35 and pbExtreme <= 48) or (pbDir == -1 and pbExtreme >= 52 and pbExtreme <= 65))
 
     entryLong  = pbReady and pbDir == 1  and trendLong  and close > ema20 and rsi14 > 50
     entryShort = pbReady and pbDir == -1 and trendShort and close < ema20 and rsi14 < 50
@@ -105,8 +102,7 @@ if barstate.isconfirmed
         high5  = ta.highest(high, 5)
         eurusd = request.security("FX:EURUSD", timeframe.period, close, lookahead=barmerge.lookahead_off)
         dir    = entryLong ? 1 : -1
-        slDist = dir == 1 ? math.max(1.5 * atrM15, (close - low5) + 0.2 * atrM15)
-                           : math.max(1.5 * atrM15, (high5 - close) + 0.2 * atrM15)
+        slDist = dir == 1 ? math.max(1.5 * atrM15, (close - low5) + 0.2 * atrM15) : math.max(1.5 * atrM15, (high5 - close) + 0.2 * atrM15)
 
         if slDist > 0 and slDist <= 2.5 * atrM15 and not na(eurusd)
             qty = (riskEUR * eurusd) / slDist  // conversion du risque EUR -> devise de cotation via EURUSD
