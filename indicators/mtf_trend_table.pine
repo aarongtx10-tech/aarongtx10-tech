@@ -1,0 +1,105 @@
+//@version=6
+// Tableau de tendance multi-unités de temps (EMA 20/50/200 + filtre ADX optionnel)
+indicator("Tendance Multi-Timeframe", shorttitle = "MTF Trend", overlay = true)
+
+// ───────────── Paramètres : unités de temps (case à cocher + TF) ─────────────
+grpTF = "Unités de temps"
+on1 = input.bool(true, "", inline = "tf1", group = grpTF)
+tf1 = input.timeframe("5", "TF 1", inline = "tf1", group = grpTF)
+on2 = input.bool(true, "", inline = "tf2", group = grpTF)
+tf2 = input.timeframe("15", "TF 2", inline = "tf2", group = grpTF)
+on3 = input.bool(true, "", inline = "tf3", group = grpTF)
+tf3 = input.timeframe("60", "TF 3", inline = "tf3", group = grpTF)
+on4 = input.bool(true, "", inline = "tf4", group = grpTF)
+tf4 = input.timeframe("240", "TF 4", inline = "tf4", group = grpTF)
+on5 = input.bool(true, "", inline = "tf5", group = grpTF)
+tf5 = input.timeframe("D", "TF 5", inline = "tf5", group = grpTF)
+
+// ───────────── Paramètres : EMA et ADX ─────────────
+grpEma = "Moyennes mobiles"
+lenFast = input.int(20, "EMA rapide", minval = 1, group = grpEma)
+lenMid = input.int(50, "EMA moyenne", minval = 1, group = grpEma)
+lenSlow = input.int(200, "EMA lente", minval = 1, group = grpEma)
+showEma = input.bool(true, "Afficher les EMA (TF actuelle)", group = grpEma)
+
+grpAdx = "Filtre ADX"
+useAdx = input.bool(false, "Activer le filtre ADX", group = grpAdx)
+adxLen = input.int(14, "Période ADX", minval = 1, group = grpAdx)
+adxThr = input.float(20.0, "Seuil ADX (en dessous = Neutre)", minval = 0, group = grpAdx)
+
+// ───────────── Paramètres : tableau ─────────────
+grpTbl = "Tableau"
+tblPos = input.string(position.top_right, "Position", options = [position.top_right, position.top_left, position.top_center, position.middle_right, position.middle_left, position.bottom_right, position.bottom_left, position.bottom_center], group = grpTbl)
+txtSize = input.string(size.small, "Taille du texte", options = [size.tiny, size.small, size.normal, size.large, size.huge], group = grpTbl)
+colBg = input.color(color.rgb(24, 26, 32), "Fond", group = grpTbl)
+colTxt = input.color(color.rgb(220, 222, 228), "Texte", group = grpTbl)
+colBull = input.color(color.rgb(38, 166, 91), "Bullish", group = grpTbl)
+colBear = input.color(color.rgb(214, 48, 49), "Bearish", group = grpTbl)
+colNeut = input.color(color.rgb(200, 140, 30), "Neutre", group = grpTbl)
+
+// ───────────── Logique de tendance ─────────────
+// Renvoie 1 (Bullish), -1 (Bearish) ou 0 (Neutre).
+// Anti-repainting : en temps réel on lit la bougie précédente (clôturée) ; en historique la bougie est déjà clôturée.
+f_trend() =>
+    float e1 = ta.ema(close, lenFast)
+    float e2 = ta.ema(close, lenMid)
+    float e3 = ta.ema(close, lenSlow)
+    [diP, diM, adx] = ta.dmi(adxLen, adxLen)
+    int state = e1 > e2 and e2 > e3 and close > e1 ? 1 : e1 < e2 and e2 < e3 and close < e1 ? -1 : 0
+    if useAdx and adx < adxThr
+        state := 0
+    state[barstate.isrealtime ? 1 : 0]
+
+// Requêtes multi-TF (lookahead désactivé = pas de données futures)
+t1 = request.security(syminfo.tickerid, tf1, f_trend(), lookahead = barmerge.lookahead_off)
+t2 = request.security(syminfo.tickerid, tf2, f_trend(), lookahead = barmerge.lookahead_off)
+t3 = request.security(syminfo.tickerid, tf3, f_trend(), lookahead = barmerge.lookahead_off)
+t4 = request.security(syminfo.tickerid, tf4, f_trend(), lookahead = barmerge.lookahead_off)
+t5 = request.security(syminfo.tickerid, tf5, f_trend(), lookahead = barmerge.lookahead_off)
+
+// ───────────── EMA de l'unité de temps actuelle ─────────────
+emaF = ta.ema(close, lenFast)
+emaM = ta.ema(close, lenMid)
+emaS = ta.ema(close, lenSlow)
+plot(showEma ? emaF : na, "EMA rapide", color.rgb(41, 182, 246), 1)
+plot(showEma ? emaM : na, "EMA moyenne", color.rgb(255, 193, 7), 1)
+plot(showEma ? emaS : na, "EMA lente", color.rgb(236, 64, 122), 2)
+
+// ───────────── Tableau ─────────────
+// Libellé lisible d'une TF : "5" -> M5, "60" -> H1, "D" -> Daily
+f_label(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s < 60 ? tf : s < 3600 ? "M" + str.tostring(int(s / 60)) : s < 86400 ? "H" + str.tostring(int(s / 3600)) : s == 86400 ? "Daily" : tf
+
+// Écrit une ligne "TF | Tendance" à l'indice r
+f_row(table t, int r, string lbl, int st) =>
+    string txt = st == 1 ? "Bullish" : st == -1 ? "Bearish" : "Neutre"
+    color c = st == 1 ? colBull : st == -1 ? colBear : colNeut
+    table.cell(t, 0, r, lbl, text_color = colTxt, bgcolor = colBg, text_size = txtSize, text_halign = text.align_left)
+    table.cell(t, 1, r, txt, text_color = color.white, bgcolor = c, text_size = txtSize)
+
+var table tbl = table.new(tblPos, 2, 7, bgcolor = colBg, frame_color = color.rgb(60, 63, 72), frame_width = 1, border_color = color.rgb(40, 42, 50), border_width = 1)
+
+// Mise à jour uniquement sur la dernière bougie (performance)
+if barstate.islast
+    table.clear(tbl, 0, 0, 1, 6)
+    table.cell(tbl, 0, 0, "TF", text_color = colTxt, bgcolor = colBg, text_size = txtSize)
+    table.cell(tbl, 1, 0, "Tendance", text_color = colTxt, bgcolor = colBg, text_size = txtSize)
+    int row = 1
+    int bulls = 0
+    int bears = 0
+    int n = 0
+    array<bool> ons = array.from(on1, on2, on3, on4, on5)
+    array<string> tfs = array.from(tf1, tf2, tf3, tf4, tf5)
+    array<int> sts = array.from(t1, t2, t3, t4, t5)
+    for i = 0 to 4
+        if ons.get(i)
+            int st = sts.get(i)
+            f_row(tbl, row, f_label(tfs.get(i)), st)
+            row += 1
+            n += 1
+            bulls += st == 1 ? 1 : 0
+            bears += st == -1 ? 1 : 0
+    // Global : majorité stricte des TF actives, sinon Neutre
+    int glob = bulls > n / 2 ? 1 : bears > n / 2 ? -1 : 0
+    f_row(tbl, row, "Global", glob)
